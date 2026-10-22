@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Ledger</title>
+<style>
+:root{--bg:#fff;--fg:#1a1a1a;--mut:#6b6b6b;--line:#e2e2e2;--acc:#1d4ed8;--sur:#f6f6f4;--bad:#b91c1c;--ok:#15803d;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#141414;--fg:#ececec;--mut:#9a9a9a;--line:#2e2e2e;--acc:#7da2ff;--sur:#1e1e1e;--bad:#f87171;--ok:#4ade80}}
+:root[data-theme="dark"]{--bg:#141414;--fg:#ececec;--mut:#9a9a9a;--line:#2e2e2e;--acc:#7da2ff;--sur:#1e1e1e;--bad:#f87171;--ok:#4ade80}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif}
+main{max-width:1000px;margin:0 auto;padding:16px}
+h1{font-size:18px;margin:0 0 12px}h2{font-size:15px;margin:16px 0 8px}
+nav{display:flex;gap:4px;flex-wrap:wrap;border-bottom:1px solid var(--line);margin-bottom:16px}
+nav button{background:none;border:0;border-bottom:2px solid transparent;padding:8px 12px;color:var(--mut);font:inherit;cursor:pointer}
+nav button.on{color:var(--fg);border-color:var(--acc);font-weight:600}
+input,select,button.b{font:inherit;padding:6px 8px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--fg)}
+button.b{cursor:pointer;background:var(--sur)}button.p{background:var(--acc);color:#fff;border-color:var(--acc)}button:disabled{opacity:.4;cursor:not-allowed}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px}
+.wrap{overflow-x:auto}table{border-collapse:collapse;width:100%}th,td{padding:6px 8px;border-bottom:1px solid var(--line);text-align:left;white-space:nowrap}
+th{color:var(--mut);font-weight:500;font-size:12px}td.n,th.n{text-align:right;font-variant-numeric:tabular-nums}
+.tag{font-size:11px;padding:1px 6px;border-radius:9px;background:var(--sur);border:1px solid var(--line)}
+.bad{color:var(--bad)}.ok{color:var(--ok)}.mut{color:var(--mut)}
+.card{background:var(--sur);border:1px solid var(--line);border-radius:8px;padding:12px;margin-bottom:12px}
+.lines input[list]{width:min(380px,60vw)}.lines input[type=number]{width:110px}
+</style></head><body><main>
+<h1>Ledger <span class="mut" style="font-weight:400">· demo, stored in this browser</span></h1>
+<nav id="nav"></nav><div id="v"></div>
+
+<script>
+const CLASSES=['asset','liability','reserves','income','expense'];
+const NORMAL={asset:'D',expense:'D',liability:'C',reserves:'C',income:'C'};
+const SEED=[
+['1000','Bank – current account','asset',1],['1100','Trade receivables','asset',0],['1500','Fixed assets','asset',0],
+['2000','Trade payables','liability',0],['2100','VAT control','liability',0],
+['3000','Share capital','reserves',0],['3100','Retained earnings','reserves',0],
+['4000','Sales revenue','income',0],['4100','Other income','income',0],
+['5000','Cost of sales','expense',0],['5100','Rent and rates','expense',0],['5200','Salaries','expense',0],['5300','Software and subscriptions','expense',0]
+].map(a=>({code:a[0],name:a[1],cls:a[2],bank:!!a[3]}));
+let coa=[],jr=[],tab='coa',user='demo.user',draft=null;
+const $=s=>document.querySelector(s);
+const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const fmt=n=>n?n.toLocaleString('en-GB',{minimumFractionDigits:2,maximumFractionDigits:2}):'';
+function load(){try{coa=JSON.parse(localStorage.getItem('acc.coa'))||null}catch(e){coa=null}
+ if(!coa){coa=SEED;saveCoa()}
+ try{jr=(JSON.parse(localStorage.getItem('acc.journals'))||[]).map(s=>JSON.parse(s))}catch(e){jr=[]}}
+function saveCoa(){try{localStorage.setItem('acc.coa',JSON.stringify(coa))}catch(e){}}
+// every journal line is stored as its own JSON string; lines of one entry share jid
+function saveJr(){try{localStorage.setItem('acc.journals',JSON.stringify(jr.map(l=>JSON.stringify(l))))}catch(e){}}
+const acct=c=>coa.find(a=>a.code===c);
+const rid=()=>'J'+Math.random().toString(36).slice(2,8).toUpperCase();
+const today=()=>new Date().toISOString().slice(0,10);
+
+const TABS=[['coa','Chart of accounts'],['je','Journal entry'],['gen','General'],['exp','Expenses'],['inc','Income'],['bank','Bank'],['rep','Reports'],['data','Import / export']];
+function nav(){$('#nav').innerHTML=TABS.map(t=>`<button class="${t[0]===tab?'on':''}" onclick="go('${t[0]}')">${t[1]}</button>`).join('')}
+function go(t){tab=t;nav();({coa:vCoa,je:vJe,gen:vLedger,exp:vLedger,inc:vLedger,bank:vLedger,rep:vReport,data:vData})[t]()}
+
+/* ---------- Chart of accounts CRUD ---------- */
+let editing=null;
+function vCoa(){
+ const e=editing?acct(editing):{code:'',name:'',cls:'asset',bank:false};
+ $('#v').innerHTML=`<div class="card"><div class="row">
+ <input id="c_code" placeholder="Code" size="6" value="${esc(e.code)}" ${editing?'disabled':''}>
+ <input id="c_name" placeholder="Description" size="30" value="${esc(e.name)}">
+ <select id="c_cls">${CLASSES.map(c=>`<option ${c===e.cls?'selected':''}>${c}</option>`).join('')}</select>
+ <label><input type="checkbox" id="c_bank" ${e.bank?'checked':''}> Bank account</label>
+ <button class="b p" onclick="coaSave()">${editing?'Update':'Add account'}</button>
+ ${editing?'<button class="b" onclick="editing=null;vCoa()">Cancel</button>':''}</div><div id="c_err" class="bad"></div></div>
+ <div class="wrap"><table><tr><th>Code</th><th>Description</th><th>Group</th><th>Bank</th><th></th></tr>
+ ${[...coa].sort((a,b)=>a.code.localeCompare(b.code)).map(a=>`<tr><td>${esc(a.code)}</td><td>${esc(a.name)}</td><td><span class="tag">${a.cls}</span></td><td>${a.bank?'Yes':''}</td>
+ <td class="n"><button class="b" onclick="editing='${a.code}';vCoa()">Edit</button> <button class="b" onclick="coaDel('${a.code}')">Delete</button></td></tr>`).join('')}</table></div>
+ <p class="mut"><button class="b" onclick="resetAll()">Reset demo data</button></p>`}
+function coaSave(){
+ const code=$('#c_code').value.trim(),name=$('#c_name').value.trim(),cls=$('#c_cls').value,bank=$('#c_bank').checked;
+ if(!code||!name){$('#c_err').textContent='Code and description are required.';return}
+ if(bank&&cls!=='asset'){$('#c_err').textContent='Bank accounts must be in the asset group.';return}
+ if(editing){Object.assign(acct(editing),{name,cls,bank});editing=null}
+ else{if(acct(code)){$('#c_err').textContent='That code already exists.';return}coa.push({code,name,cls,bank})}
+ saveCoa();vCoa()}
+function coaDel(c){if(jr.some(l=>l.acct===c)){alert('This account has postings and cannot be deleted.');return}
+ if(confirm('Delete '+c+'?')){coa=coa.filter(a=>a.code!==c);saveCoa();vCoa()}}
+function resetAll(){if(confirm('Clear all accounts and journals?')){localStorage.removeItem('acc.coa');localStorage.removeItem('acc.journals');load();go('coa')}}
+
+/* ---------- Journal entry ---------- */
+function newDraft(){draft={date:today(),ccy:'GBP',narr:'',lines:[{a:'',side:'D',v:''},{a:'',side:'C',v:''}]}}
+const label=a=>a.code+' – '+a.name;
+function vJe(){
+ if(!draft)newDraft();
+ $('#v').innerHTML=`<datalist id="dl">${coa.map(a=>`<option value="${esc(label(a))}">`).join('')}</datalist>
+ <div class="card"><div class="row">
+ <label>Date <input type="date" id="j_date" value="${draft.date}"></label>
+ <label>Currency <select id="j_ccy">${['GBP','USD','EUR','ZMW'].map(c=>`<option ${c===draft.ccy?'selected':''}>${c}</option>`).join('')}</select></label>
+ <input id="j_narr" placeholder="Narrative" size="34" value="${esc(draft.narr)}"></div>
+ <div class="mut">Period <b id="j_per"></b> · input by ${user} · signed off by ${user} (demo)</div></div>
+ <div class="lines">${draft.lines.map((l,i)=>`<div class="row">
+ <input list="dl" placeholder="Search account by code or description" data-i="${i}" data-f="a" value="${esc(l.a)}">
+ <select data-i="${i}" data-f="side"><option value="D" ${l.side==='D'?'selected':''}>Debit</option><option value="C" ${l.side==='C'?'selected':''}>Credit</option></select>
+ <input type="number" step="0.01" min="0" placeholder="0.00" data-i="${i}" data-f="v" value="${l.v}">
+ <button class="b" onclick="draft.lines.splice(${i},1);vJe()" ${draft.lines.length<3?'disabled':''}>✕</button></div>`).join('')}</div>
+ <div class="row"><button class="b" onclick="draft.lines.push({a:'',side:'D',v:''});vJe()">+ Line</button>
+ <span id="j_tot"></span><button class="b p" id="j_post" onclick="post()">Post journal</button></div><div id="j_err" class="bad"></div>`;
+ document.querySelectorAll('.lines [data-f],#j_date,#j_ccy,#j_narr').forEach(el=>el.addEventListener('input',sync));
+ sync()}
+function sync(){
+ draft.date=$('#j_date').value;draft.ccy=$('#j_ccy').value;draft.narr=$('#j_narr').value;
+ document.querySelectorAll('.lines [data-f]').forEach(el=>draft.lines[el.dataset.i][el.dataset.f]=el.value);
+ $('#j_per').textContent=(draft.date||'').slice(0,7);
+ let d=0,c=0;draft.lines.forEach(l=>{const v=Math.round(parseFloat(l.v||0)*100);l.side==='D'?d+=v:c+=v});
+ const ok=d===c&&d>0;
+ $('#j_tot').innerHTML=`Dr ${fmt(d/100)||'0.00'} · Cr ${fmt(c/100)||'0.00'} · <span class="${ok?'ok':'bad'}">${ok?'Balanced':'Out by '+fmt(Math.abs(d-c)/100)}</span>`;
+ $('#j_post').disabled=!ok}
+function post(){
+ const code=s=>(s||'').split(' – ')[0].trim();
+ for(const l of draft.lines){if(!acct(code(l.a))){$('#j_err').textContent='Pick a valid account on every line.';return}
+  if(!(parseFloat(l.v)>0)){$('#j_err').textContent='Every line needs an amount above zero.';return}}
+ if(!draft.date){$('#j_err').textContent='Date is required.';return}
+ const jid=rid(),ts=new Date().toISOString();
+ draft.lines.forEach((l,i)=>jr.push({jid,ln:i+1,date:draft.date,per:draft.date.slice(0,7),acct:code(l.a),side:l.side,val:Math.round(parseFloat(l.v)*100)/100,ccy:draft.ccy,narr:draft.narr,by:user,signed:user,ts}));
+ saveJr();draft=null;go('gen')}
+
+/* ---------- Ledger views ---------- */
+let q='';
+function vLedger(){
+ const f={gen:()=>true,exp:l=>acct(l.acct)?.cls==='expense',inc:l=>acct(l.acct)?.cls==='income',bank:l=>acct(l.acct)?.bank}[tab];
+ const rows=jr.filter(f).sort((a,b)=>a.date.localeCompare(b.date)||a.ts.localeCompare(b.ts)||a.ln-b.ln);
+ const shown=rows.filter(l=>!q||JSON.stringify(l).toLowerCase().includes(q)||(acct(l.acct)?.name||'').toLowerCase().includes(q));
+ let bal=0;const withBal=shown.map(l=>{bal+=l.side==='D'?l.val:-l.val;return [l,bal]});
+ const td=shown.reduce((s,l)=>s+(l.side==='D'?l.val:0),0),tc=shown.reduce((s,l)=>s+(l.side==='C'?l.val:0),0);
+ const net=tab==='exp'?td-tc:tab==='inc'?tc-td:tab==='bank'?td-tc:td-tc;
+ $('#v').innerHTML=`<div class="row"><input id="q" placeholder="Filter by account, group id, narrative…" size="34" value="${esc(q)}">
+ <span class="mut">${shown.length} lines · Dr ${fmt(td)||'0.00'} · Cr ${fmt(tc)||'0.00'} · ${{gen:'Net',exp:'Net expense',inc:'Net income',bank:'Net movement'}[tab]} ${fmt(Math.abs(net))||'0.00'}</span></div>
+ <div class="wrap"><table><tr><th>Date</th><th>Period</th><th>Group</th><th>Account</th><th>Narrative</th><th>Ccy</th><th class="n">Debit</th><th class="n">Credit</th>${tab==='bank'?'<th class="n">Balance</th>':''}<th>By</th><th>Signed</th></tr>
+ ${withBal.map(([l,b])=>`<tr><td>${l.date}</td><td>${l.per}</td><td><span class="tag">${l.jid}</span></td><td>${esc(l.acct)} ${esc(acct(l.acct)?.name||'?')}</td><td>${esc(l.narr)}</td><td>${l.ccy}</td>
+ <td class="n">${l.side==='D'?fmt(l.val):''}</td><td class="n">${l.side==='C'?fmt(l.val):''}</td>${tab==='bank'?`<td class="n">${fmt(b)||'0.00'}</td>`:''}<td>${l.by}</td><td>${l.signed}</td></tr>`).join('')||'<tr><td class="mut" colspan="11">No postings yet.</td></tr>'}</table></div>
+ ${tab==='gen'?trial():''}`;
+ $('#q').oninput=e=>{q=e.target.value.toLowerCase();const p=e.target.selectionStart;vLedger();$('#q').focus();$('#q').setSelectionRange(p,p)}}
+function trial(){
+ const t=coa.map(a=>{let d=0,c=0;jr.forEach(l=>{if(l.acct===a.code)l.side==='D'?d+=l.val:c+=l.val});return {a,d,c}}).filter(x=>x.d||x.c);
+ const D=t.reduce((s,x)=>s+x.d,0),C=t.reduce((s,x)=>s+x.c,0);
+ return `<h2>Trial balance</h2><div class="wrap"><table><tr><th>Account</th><th>Group</th><th class="n">Debit</th><th class="n">Credit</th></tr>
+ ${t.map(x=>`<tr><td>${x.a.code} ${esc(x.a.name)}</td><td><span class="tag">${x.a.cls}</span></td><td class="n">${fmt(x.d)}</td><td class="n">${fmt(x.c)}</td></tr>`).join('')}
+ <tr><th>Total</th><th></th><th class="n">${fmt(D)}</th><th class="n">${fmt(C)}</th></tr></table></div>`}
+
+/* ---------- Reports ---------- */
+let rf=today().slice(0,4)+'-01-01',rt=today();
+const r2=n=>Math.round(n*100)/100;
+function sec(title,obj,neg){
+ const k=Object.keys(obj).sort();let t=0;
+ const rows=k.map(c=>{t+=obj[c];return `<tr><td>${c} ${esc(acct(c).name)}</td><td class="n">${fmt(r2(obj[c]))||'0.00'}</td></tr>`}).join('');
+ return {t:r2(t),h:`<tr><th colspan="2">${title}</th></tr>${rows||'<tr><td class="mut" colspan="2">None</td></tr>'}<tr><td><b>Total ${title.toLowerCase()}</b></td><td class="n"><b>${fmt(r2(t))||'0.00'}</b></td></tr>`};
+}
+function vReport(){
+ const pl={income:{},expense:{}},bs={asset:{},liability:{},reserves:{}};let cum=0;const cc=new Set();
+ jr.forEach(l=>{const a=acct(l.acct);if(!a||l.date>rt)return;cc.add(l.ccy);
+  const x=(l.side===NORMAL[a.cls]?1:-1)*l.val;
+  if(a.cls==='income'||a.cls==='expense'){cum+=a.cls==='income'?x:-x;if(l.date>=rf)pl[a.cls][a.code]=(pl[a.cls][a.code]||0)+x}
+  else bs[a.cls][a.code]=(bs[a.cls][a.code]||0)+x});
+ const inc=sec('Income',pl.income),exp=sec('Expenses',pl.expense),prof=r2(inc.t-exp.t);
+ const A=sec('Assets',bs.asset),L=sec('Liabilities',bs.liability),R=sec('Reserves',bs.reserves);
+ const eq=r2(R.t+cum),le=r2(L.t+eq),diff=r2(A.t-le);
+ $('#v').innerHTML=`<div class="row"><label>From <input type="date" value="${rf}" onchange="rf=this.value;vReport()"></label>
+ <label>To / as at <input type="date" value="${rt}" onchange="rt=this.value;vReport()"></label>
+ ${cc.size>1?'<span class="bad">Mixed currencies ('+[...cc].join(', ')+') are summed without conversion.</span>':''}</div>
+ <h2>Profit and loss · ${rf} to ${rt}</h2><div class="wrap"><table>${inc.h}${exp.h}
+ <tr><td><b>${prof>=0?'Net profit':'Net loss'}</b></td><td class="n"><b>${fmt(Math.abs(prof))||'0.00'}</b></td></tr></table></div>
+ <h2>Balance sheet · as at ${rt}</h2><div class="wrap"><table>${A.h}${L.h}${R.h}
+ <tr><td>Profit and loss to date (all periods)</td><td class="n">${fmt(r2(cum))||'0.00'}</td></tr>
+ <tr><td><b>Total equity</b></td><td class="n"><b>${fmt(eq)||'0.00'}</b></td></tr>
+ <tr><td><b>Total liabilities and equity</b></td><td class="n"><b>${fmt(le)||'0.00'}</b></td></tr></table></div>
+ <p class="${diff===0?'ok':'bad'}">${diff===0?'Balance sheet balances.':'Out of balance by '+fmt(Math.abs(diff))}</p>`;
+}
+
+/* ---------- Import / export ---------- */
+function vData(){
+ $('#v').innerHTML=`<div class="card"><div class="row">
+ <button class="b p" onclick="dExport()">Export to box</button><button class="b" onclick="dCopy()">Copy</button><button class="b" onclick="dDownload()">Download file</button>
+ <label class="b" style="cursor:pointer">Choose file…<input type="file" id="d_file" accept=".json,application/json" hidden></label>
+ <button class="b" onclick="dImport()">Import from box (replaces all)</button></div>
+ <textarea id="d_box" rows="14" style="width:100%;font:12px monospace;background:var(--bg);color:var(--fg);border:1px solid var(--line);border-radius:6px" placeholder="Export fills this box. To import, paste JSON here or choose a file, then import."></textarea>
+ <div id="d_msg" class="mut"></div></div>
+ <p class="mut">Format: chart of accounts plus a list of journal lines, each line a JSON string carrying its group id. Imports are checked for valid accounts and for every group balancing before anything is replaced.</p>`;
+ $('#d_file').onchange=e=>{const f=e.target.files[0];if(!f)return;const r=new FileReader();r.onload=()=>{$('#d_box').value=r.result;msg('Loaded '+f.name+'. Press import to apply.')};r.readAsText(f)};
+}
+const msg=(t,bad)=>{const m=$('#d_msg');m.textContent=t;m.className=bad?'bad':'ok'};
+function dExport(){$('#d_box').value=JSON.stringify({app:'ledger',version:1,exported:new Date().toISOString(),coa,journals:jr.map(l=>JSON.stringify(l))},null,1);msg('Exported '+coa.length+' accounts and '+jr.length+' journal lines.')}
+function dCopy(){const b=$('#d_box');if(!b.value)dExport();b.select();try{document.execCommand('copy');msg('Copied.')}catch(e){msg('Select the text and copy manually.',1)}}
+function dDownload(){if(!$('#d_box').value)dExport();try{const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([$('#d_box').value],{type:'application/json'}));a.download='ledger-'+today()+'.json';a.click()}catch(e){msg('Download is not available here. Use Copy instead.',1)}}
+function dImport(){
+ let d;try{d=JSON.parse($('#d_box').value)}catch(e){msg('That is not valid JSON.',1);return}
+ if(!d||!Array.isArray(d.coa)||!Array.isArray(d.journals)){msg('Expected an object with coa and journals arrays.',1);return}
+ for(const a of d.coa)if(!a.code||!a.name||!CLASSES.includes(a.cls)){msg('Bad account entry: '+JSON.stringify(a),1);return}
+ const codes=new Set(d.coa.map(a=>a.code));if(codes.size!==d.coa.length){msg('Duplicate account codes.',1);return}
+ let lines=[];
+ try{lines=d.journals.map(s=>typeof s==='string'?JSON.parse(s):s)}catch(e){msg('A journal line is not valid JSON.',1);return}
+ const g={};
+ for(const l of lines){
+  if(!l.jid||!l.date||!(l.val>0)||!['D','C'].includes(l.side)||!codes.has(l.acct)){msg('Bad journal line: '+JSON.stringify(l),1);return}
+  g[l.jid]=(g[l.jid]||0)+(l.side==='D'?1:-1)*Math.round(l.val*100)}
+ const off=Object.keys(g).filter(k=>g[k]!==0);
+ if(off.length){msg('Groups that do not balance: '+off.slice(0,5).join(', '),1);return}
+ if(!confirm('Replace all current data with '+d.coa.length+' accounts and '+lines.length+' lines?'))return;
+ coa=d.coa.map(a=>({code:String(a.code),name:a.name,cls:a.cls,bank:!!a.bank}));jr=lines;saveCoa();saveJr();
+ msg('Imported '+coa.length+' accounts, '+Object.keys(g).length+' journals.');
+}
+
+load();nav();go('coa');
+</script></main></body></html>
